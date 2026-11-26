@@ -2,7 +2,11 @@
 """Shared loading, prompting and scoring for the IndicGenBench adapters (Singh et al., ACL 2024)."""
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+import re
+import string
+import unicodedata
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from evalscope.api.benchmark import DefaultDataAdapter
 from evalscope.api.dataset import DatasetDict, Sample, build_dataset_from_records, download_dataset_file
@@ -109,17 +113,20 @@ class IndicGenBenchAdapter(DefaultDataAdapter):
         return test_dataset, fewshot_dataset
 
     def _build_subset(self, subset: str, split: str, limit: Any, repeats: int, shuffle: bool):
-        return build_dataset_from_records(
-            records=self._read_records(subset, split),
-            sample_fields=self.record_to_sample,
-            name=subset,
-            location=self.dataset_id,
-            limit=limit,
-            repeats=repeats,
-            shuffle=shuffle,
-            seed=self.seed,
-            filter_func=self.sample_filter,
-        )
+        records = self._read_records(subset, split)
+        # Subsets that read the same file (XorQA-IN's two answer languages) map records by subset.
+        with self._temporary_attribute('current_subset_name', subset):
+            return build_dataset_from_records(
+                records=records,
+                sample_fields=self.record_to_sample,
+                name=subset,
+                location=self.dataset_id,
+                limit=limit,
+                repeats=repeats,
+                shuffle=shuffle,
+                seed=self.seed,
+                filter_func=self.sample_filter,
+            )
 
     def _read_records(self, subset: str, split: str) -> List[Dict[str, Any]]:
         file_name = self.subset_file(subset, split)
@@ -180,3 +187,52 @@ class CorpusChrfMixin:
                 metadata={'type': 'sacrebleu-corpus-chrf', **CHRF_SETTINGS},
             )
         ]
+
+
+def _is_punctuation(char: str) -> bool:
+    return char in string.punctuation or unicodedata.category(char).startswith('P')
+
+
+def normalize_answer(text: str, language: str) -> List[str]:
+    """Tokens of an answer under the MLQA normalization of SQuAD's Token-F1.
+
+    Lowercases, removes every Unicode punctuation character (not only ASCII, so the Devanagari danda, the Tibetan
+    shad and tsheg and the Arabic comma are removed too), drops English articles from English answers and splits
+    on whitespace. On ASCII-only text this is SQuAD v1.1's `normalize_answer`.
+    """
+    text = ''.join(char for char in text.lower() if not _is_punctuation(char))
+    if language == 'en':
+        text = re.sub(r'\b(a|an|the)\b', ' ', text)
+    return text.split()
+
+
+def token_f1(prediction: str, references: Union[str, List[str]], language: str) -> float:
+    """SQuAD-style Token-F1 of a prediction, the best over its references."""
+    if isinstance(references, str):
+        references = [references]
+    predicted = normalize_answer(prediction, language)
+    best = 0.0
+    for reference in references:
+        expected = normalize_answer(reference, language)
+        common = sum((Counter(predicted) & Counter(expected)).values())
+        if common:
+            precision, recall = common / len(predicted), common / len(expected)
+            best = max(best, 2 * precision * recall / (precision + recall))
+    return best
+
+
+class TokenF1Mixin:
+    """Token-F1 per sample, averaged per subset; the answer language comes from the sample metadata."""
+
+    def match_score(
+        self, original_prediction: str, filtered_prediction: str, reference: Any, task_state: TaskState
+    ) -> Score:
+        # `reference` is the display text of all answers; `target_values` keeps them apart for the max.
+        language = task_state.metadata['answer_language']
+        references = task_state.target_values or [reference]
+        return Score(
+            value={'f1': token_f1(filtered_prediction, references, language)},
+            prediction=original_prediction,
+            extracted_prediction=filtered_prediction,
+            main_score_name='f1',
+        )

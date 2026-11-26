@@ -1081,6 +1081,14 @@ class TestNativeBenchmark(TestBenchmark):
         """Test CrossSum-IN benchmark with mock, English and an Indic language."""
         self._run_dataset_test('crosssum_in', dataset_args={'subset_list': ['en', 'hi']}, limit=2, use_mock=True)
 
+    def test_xquad_in_mock(self):
+        """Test XQuAD-IN benchmark with mock, English and an Indic language."""
+        self._run_dataset_test('xquad_in', dataset_args={'subset_list': ['en', 'hi']}, limit=2, use_mock=True)
+
+    def test_xorqa_in_mock(self):
+        """Test XorQA-IN benchmark with mock, both answer languages."""
+        self._run_dataset_test('xorqa_in', dataset_args={'subset_list': ['hi', 'hi-en']}, limit=2, use_mock=True)
+
     def test_triviaqa_indic_mock(self):
         """Test TriviaQA-Indic-MCQ benchmark with mock."""
         self._run_dataset_test('triviaqa_indic', dataset_args={'subset_list': ['hi']}, limit=2, use_mock=True)
